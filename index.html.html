@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<title>Love Switch 💗</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script>
+<!--
+  Love Switch Dashboard v7 — HiveMQ Cloud Edition
+  ─────────────────────────────────────────────────
+  Konek langsung ke HiveMQ Cloud via Paho MQTT (WebSocket SSL).
+  Login screen dengan password dashboard (SHA-256 di browser).
+  MQTT credentials diinput saat login, disimpan di sessionStorage.
+
+  Alur:
+    Browser ──login──► cek SHA-256 hash ──► buka dashboard
+    Browser ──WebSocket SSL port 8884──► HiveMQ Cloud ──► ESP32
+    ESP32 ──MQTT──► HiveMQ Cloud ──WebSocket──► Browser
+-->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@700;800&family=DM+Sans:wght@400;500&display=swap');
+
+:root {
+  --bg:     #0c0c10;
+  --s1:     #13131a;
+  --s2:     #1c1c26;
+  --s3:     #26263a;
+  --pink:   #ff3e8a;
+  --pink2:  #ff6fa8;
+  --green:  #00e5a0;
+  --red:    #ff4560;
+  --yellow: #ffd166;
+  --blue:   #4d9fff;
+  --text:   #f0eeff;
+  --muted:  #6b6b8a;
+  --border: rgba(255,255,255,0.06);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg); color: var(--text);
+  font-family: 'DM Sans', sans-serif;
+  min-height: 100vh; display: flex; flex-direction: column;
+  align-items: center; padding: 20px 16px 40px; overflow-x: hidden;
+}
+body::before {
+  content: ''; position: fixed; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  pointer-events: none; z-index: 0;
+}
+.blob { position: fixed; border-radius: 50%; filter: blur(80px); pointer-events: none; z-index: 0; opacity: 0.1; }
+.blob1 { width:400px; height:400px; background:var(--pink); top:-100px; left:-100px; }
+.blob2 { width:300px; height:300px; background:#534ab7; bottom:-80px; right:-80px; }
+
+/* ── LOGIN ─────────────────────────────────────────────────── */
+#loginScreen {
+  position: fixed; inset: 0; background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9999; flex-direction: column;
+}
+.login-box {
+  background: var(--s1); border: 1px solid var(--border);
+  border-radius: 24px; padding: 36px 28px;
+  width: 100%; max-width: 340px;
+  display: flex; flex-direction: column; align-items: center;
+}
+.login-heart { font-size: 3rem; margin-bottom: 8px; animation: hb 1.4s ease-in-out infinite; }
+@keyframes hb { 0%,100%{transform:scale(1)} 14%{transform:scale(1.1)} 28%{transform:scale(1)} 42%{transform:scale(1.05)} }
+.login-title { font-family:'Syne',sans-serif; font-size:1.5rem; font-weight:800; color:var(--text); margin-bottom:4px; }
+.login-title span { color:var(--pink); }
+.login-sub { font-family:'DM Mono',monospace; font-size:0.68rem; color:var(--muted); margin-bottom:28px; text-transform:uppercase; letter-spacing:1px; }
+.login-note {
+  background: rgba(77,159,255,0.1); border: 1px solid rgba(77,159,255,0.2);
+  border-radius: 10px; padding: 10px 14px;
+  font-family:'DM Mono',monospace; font-size:0.65rem; color:var(--blue);
+  margin-bottom: 18px; line-height: 1.5; width: 100%;
+}
+.login-field { width:100%; margin-bottom:10px; }
+.login-field label { display:block; font-family:'DM Mono',monospace; font-size:0.62rem; color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-bottom:5px; }
+.login-field input {
+  width:100%; background:var(--s2); border:1px solid var(--border);
+  border-radius:10px; padding:11px 14px; color:var(--text);
+  font-family:'DM Mono',monospace; font-size:0.85rem; outline:none; transition:border-color 0.2s;
+}
+.login-field input:focus { border-color:var(--pink); }
+.btn-login {
+  width:100%; background:var(--pink); color:white; border:none;
+  border-radius:12px; padding:13px;
+  font-family:'Syne',sans-serif; font-weight:700; font-size:0.95rem;
+  cursor:pointer; letter-spacing:0.5px; transition:opacity 0.2s,transform 0.1s; margin-top:6px;
+}
+.btn-login:hover { opacity:0.88; }
+.btn-login:active { transform:scale(0.97); }
+.btn-login:disabled { opacity:0.5; cursor:not-allowed; }
+.login-err { color:var(--red); font-family:'DM Mono',monospace; font-size:0.72rem; margin-top:10px; text-align:center; min-height:18px; }
+
+/* ── APP ────────────────────────────────────────────────────── */
+#app { display:none; width:100%; }
+.wrap { position:relative; z-index:1; width:100%; max-width:420px; display:flex; flex-direction:column; gap:12px; margin:0 auto; }
+
+.header { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; flex-wrap:wrap; gap:6px; }
+.brand { font-family:'Syne',sans-serif; font-size:1.2rem; font-weight:800; letter-spacing:-1px; white-space:nowrap; }
+.brand span { color:var(--pink); }
+.header-right { display:flex; align-items:center; gap:6px; flex-wrap:nowrap; }
+.conn-pill { display:flex; align-items:center; gap:5px; padding:4px 10px; border-radius:99px; background:var(--s2); border:1px solid var(--border); font-family:'DM Mono',monospace; font-size:0.65rem; color:var(--muted); }
+.dot { width:7px; height:7px; border-radius:50%; background:var(--red); transition:all 0.4s; }
+.dot.on { background:var(--green); box-shadow:0 0 8px var(--green); }
+.btn-logout { background:none; border:1px solid var(--border); border-radius:99px; padding:4px 9px; color:var(--muted); font-family:'DM Mono',monospace; font-size:0.62rem; cursor:pointer; transition:all 0.2s; white-space:nowrap; }
+.btn-logout:hover { border-color:var(--red); color:var(--red); }
+
+/* Security badge */
+.sec-badge {
+  display:flex; align-items:center; gap:4px; padding:3px 8px;
+  border-radius:99px; background:rgba(0,229,160,0.1);
+  border:1px solid rgba(0,229,160,0.2);
+  font-family:'DM Mono',monospace; font-size:0.58rem; color:var(--green);
+  white-space:nowrap;
+}
+
+.card { background:var(--s1); border:1px solid var(--border); border-radius:24px; padding:28px 20px; display:flex; flex-direction:column; align-items:center; gap:20px; }
+.control-row { display:flex; align-items:center; justify-content:center; gap:16px; width:100%; }
+.name-btn { display:flex; flex-direction:column; align-items:center; gap:6px; flex:1; }
+.name-label { font-family:'Syne',sans-serif; font-size:1.1rem; font-weight:800; letter-spacing:-0.5px; color:var(--muted); transition:color 0.3s; }
+.lamp-label { font-family:'DM Sans',sans-serif; font-size:0.75rem; font-weight:500; color:var(--muted); transition:color 0.3s; text-align:center; }
+.lamp-label.green { color:var(--green); }
+.lamp-label.pink  { color:var(--pink); }
+.name-label.green { color:var(--green); }
+.name-label.pink  { color:var(--pink); }
+
+.heart-btn { width:150px; height:150px; border:none; background:none; cursor:pointer; position:relative; transition:transform 0.15s; outline:none; flex-shrink:0; }
+.heart-btn:active { transform:scale(0.92); }
+.heart-btn:disabled { opacity:0.4; cursor:not-allowed; }
+.heart-svg { width:100%; height:100%; transition:filter 0.4s; }
+.heart-svg.lamp-on {
+  filter: drop-shadow(0 0 18px rgba(255,62,138,0.9)) drop-shadow(0 0 45px rgba(255,62,138,0.4));
+  animation:hb 1.4s ease-in-out infinite;
+}
+
+.stats { display:grid; grid-template-columns:1fr 1fr; gap:8px; width:100%; }
+.stat { background:var(--s2); border:1px solid var(--border); border-radius:12px; padding:10px 12px; }
+.stat-label { font-family:'DM Mono',monospace; font-size:0.62rem; color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-bottom:4px; }
+.stat-val { font-family:'DM Mono',monospace; font-size:0.85rem; font-weight:500; color:var(--text); }
+.stat-val.good { color:var(--green); }
+.stat-val.warn { color:var(--yellow); }
+.stat-val.bad  { color:var(--red); }
+
+.section-title { font-family:'DM Mono',monospace; font-size:0.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:1.5px; padding:0 2px; display:flex; align-items:center; gap:8px; }
+.section-title::after { content:''; flex:1; height:1px; background:var(--border); }
+
+.panel { background:var(--s1); border:1px solid var(--border); border-radius:16px; overflow:hidden; }
+.panel-header { padding:10px 14px; border-bottom:1px solid var(--border); font-family:'DM Mono',monospace; font-size:0.7rem; color:var(--muted); display:flex; justify-content:space-between; align-items:center; cursor:pointer; user-select:none; transition:color 0.2s; }
+.panel-header:hover { color:var(--pink); }
+.panel-body { display:none; padding:14px; }
+.panel-body.open { display:block; }
+
+.calib-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+.calib-btn { padding:10px 8px; border-radius:10px; border:none; font-family:'DM Mono',monospace; font-size:0.75rem; cursor:pointer; transition:all 0.2s; font-weight:500; }
+.calib-btn:active { transform:scale(0.96); }
+.calib-btn:hover { opacity:0.8; }
+.calib-btn:disabled { opacity:0.4; cursor:not-allowed; }
+.cb-green  { background:rgba(0,229,160,0.15); color:var(--green); border:1px solid rgba(0,229,160,0.3); }
+.cb-red    { background:rgba(255,69,96,0.15);  color:var(--red);   border:1px solid rgba(255,69,96,0.3); }
+.cb-yellow { background:rgba(255,209,102,0.15);color:var(--yellow);border:1px solid rgba(255,209,102,0.3); }
+.cb-full   { grid-column:1/-1; }
+
+.slider-wrap { background:var(--s2); border-radius:10px; padding:12px 14px; margin-bottom:8px; border:1px solid var(--border); }
+.slider-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.slider-label { font-family:'DM Mono',monospace; font-size:0.7rem; color:var(--muted); }
+.slider-val { font-family:'DM Mono',monospace; font-size:1rem; font-weight:500; color:var(--yellow); }
+input[type=range] { width:100%; -webkit-appearance:none; height:4px; border-radius:4px; background:var(--s3); outline:none; margin-bottom:10px; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px; border-radius:50%; background:var(--yellow); cursor:pointer; box-shadow:0 0 8px rgba(255,209,102,0.5); }
+.btn-test-angle { width:100%; padding:9px; background:rgba(255,209,102,0.15); color:var(--yellow); border:1px solid rgba(255,209,102,0.3); border-radius:8px; font-family:'DM Mono',monospace; font-size:0.75rem; cursor:pointer; transition:opacity 0.2s; }
+.btn-test-angle:hover { opacity:0.8; }
+
+.config-wrap { background:var(--s2); border-radius:10px; padding:12px 14px; border:1px solid var(--border); }
+.config-row { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:8px; margin-bottom:10px; }
+.config-field { display:flex; flex-direction:column; gap:4px; }
+.config-field label { font-family:'DM Mono',monospace; font-size:0.6rem; color:var(--muted); text-transform:uppercase; }
+.config-field input { background:var(--s3); border:1px solid var(--border); border-radius:6px; padding:6px 8px; color:var(--text); font-family:'DM Mono',monospace; font-size:0.75rem; outline:none; width:100%; transition:border-color 0.2s; }
+.config-field input:focus { border-color:var(--pink); }
+.btn-send-config { width:100%; padding:9px; background:rgba(83,74,183,0.3); color:#a89cff; border:1px solid rgba(83,74,183,0.4); border-radius:8px; font-family:'DM Mono',monospace; font-size:0.75rem; cursor:pointer; transition:opacity 0.2s; }
+.btn-send-config:hover { opacity:0.8; }
+
+.log-box { height:100px; overflow-y:auto; padding:10px 14px; display:flex; flex-direction:column; gap:2px; }
+.log-line { font-family:'DM Mono',monospace; font-size:0.68rem; color:var(--muted); line-height:1.5; }
+.log-line.ok   { color:var(--green); }
+.log-line.err  { color:var(--red); }
+.log-line.info { color:var(--yellow); }
+.log-line.ws   { color:var(--blue); }
+.log-box::-webkit-scrollbar { width:3px; }
+.log-box::-webkit-scrollbar-thumb { background:var(--s3); border-radius:4px; }
+
+.server-fields { display:flex; flex-direction:column; gap:8px; padding:14px; }
+.field label { display:block; font-family:'DM Mono',monospace; font-size:0.65rem; color:var(--muted); margin-bottom:4px; text-transform:uppercase; letter-spacing:0.8px; }
+.field input { width:100%; background:var(--s2); border:1px solid var(--border); border-radius:8px; padding:8px 12px; color:var(--text); font-family:'DM Mono',monospace; font-size:0.8rem; outline:none; transition:border-color 0.2s; }
+.field input:focus { border-color:var(--pink); }
+.btn-save { background:var(--pink); color:white; border:none; border-radius:8px; padding:10px; font-family:'Syne',sans-serif; font-weight:700; font-size:0.85rem; cursor:pointer; transition:opacity 0.2s; letter-spacing:0.5px; width:100%; }
+.btn-save:hover { opacity:0.85; }
+</style>
+</head>
+<body>
+
+<div class="blob blob1"></div>
+<div class="blob blob2"></div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     LOGIN SCREEN
+     Password hanya dikirim ke backend via HTTPS POST.
+     Tidak ada hash di HTML, tidak ada credentials MQTT di browser.
+     ═══════════════════════════════════════════════════════════ -->
+<div id="loginScreen">
+  <div class="login-box">
+    <div class="login-heart">♡</div>
+    <div class="login-title">Love<span>Switch</span></div>
+    <div class="login-sub">v5 · HiveMQ Cloud Edition</div>
+
+    <div class="login-note">
+      🔒 Login untuk akses dashboard.<br>
+      Masukkan password dashboard dan credentials HiveMQ.
+    </div>
+
+    <div class="login-field">
+      <label>Dashboard Password</label>
+      <input id="loginPass" type="password" placeholder="••••••••"
+        onkeydown="if(event.key==='Enter') doLogin()"/>
+    </div>
+
+    <div class="login-field">
+      <label>HiveMQ Username</label>
+      <input id="loginMqttUser" type="text" placeholder="dashboard_user"
+        onkeydown="if(event.key==='Enter') doLogin()"/>
+    </div>
+
+    <div class="login-field">
+      <label>HiveMQ Password</label>
+      <input id="loginMqttPass" type="password" placeholder="••••••••"
+        onkeydown="if(event.key==='Enter') doLogin()"/>
+    </div>
+
+    <button class="btn-login" id="loginBtn" onclick="doLogin()">Masuk ♡</button>
+    <div class="login-err" id="loginErr"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     MAIN APP
+     ═══════════════════════════════════════════════════════════ -->
+<div id="app">
+<div class="wrap">
+
+  <div class="header">
+    <div class="brand">Love<span>Switch</span> 💗</div>
+    <div class="header-right">
+      <div class="sec-badge">🔒 HiveMQ</div>
+      <div class="conn-pill">
+        <div class="dot" id="dot"></div>
+        <span id="connLabel">offline</span>
+      </div>
+      <button class="btn-logout" onclick="doLogout()">keluar</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="control-row">
+      <div class="name-btn"><div class="name-label" id="nameLeft">Alif</div></div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:12px">
+        <button class="heart-btn" id="heartBtn" onclick="sendCmd('toggle')" disabled>
+          <svg class="heart-svg" id="heartSvg" viewBox="0 0 100 90" xmlns="http://www.w3.org/2000/svg">
+            <path id="heartPath"
+              d="M50 85 C50 85 5 55 5 28 C5 14 16 5 28 5 C36 5 44 9 50 16 C56 9 64 5 72 5 C84 5 95 14 95 28 C95 55 50 85 50 85Z"
+              fill="#2a1a22" stroke="#ff3e8a" stroke-width="2"/>
+          </svg>
+        </button>
+        <div class="lamp-label" id="lampLabel">— —</div>
+      </div>
+      <div class="name-btn"><div class="name-label" id="nameRight">Pipi</div></div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="stat-label">WiFi Signal</div><div class="stat-val" id="rssiVal">—</div></div>
+      <div class="stat"><div class="stat-label">IP Address</div><div class="stat-val" id="ipVal">—</div></div>
+      <div class="stat"><div class="stat-label">Uptime</div><div class="stat-val" id="uptimeVal">—</div></div>
+      <div class="stat"><div class="stat-label">Device</div><div class="stat-val" id="deviceVal">—</div></div>
+    </div>
+  </div>
+
+  <div class="section-title">// kalibrasi servo</div>
+  <div class="panel">
+    <div class="panel-header" onclick="togglePanel('calib')">
+      <span>🔧 Panel Kalibrasi</span><span id="calibArrow">▼</span>
+    </div>
+    <div class="panel-body" id="calibBody">
+      <div class="calib-grid">
+        <button class="calib-btn cb-green" onclick="sendCmd('press_on')">✅ Test Tekan ON</button>
+        <button class="calib-btn cb-red"   onclick="sendCmd('press_off')">🔴 Test Tekan OFF</button>
+        <button class="calib-btn cb-yellow cb-full" onclick="sendCmd('toggle')">🔄 Toggle Lampu</button>
+        <button class="calib-btn cb-full" onclick="sendEmergency()" style="background:rgba(255,69,96,0.2);color:#ff4560;border:1px solid rgba(255,69,96,0.4);font-size:0.85rem;padding:14px;">🛑 Emergency Stop — Balik ke Idle</button>
+      </div>
+      <div class="slider-wrap">
+        <div class="slider-top">
+          <div class="slider-label">Test Sudut Servo</div>
+          <div class="slider-val" id="angleDisplay">90°</div>
+        </div>
+        <input type="range" id="angleSlider" min="30" max="150" value="90"
+          oninput="document.getElementById('angleDisplay').textContent=this.value+'°'"/>
+        <button class="btn-test-angle" onclick="sendTestAngle()">
+          Kirim ke Servo → <span id="angleBtn">90</span>°
+        </button>
+      </div>
+      <div class="config-wrap">
+        <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:var(--muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:1px;">Update Config Sudut</div>
+        <div class="config-row">
+          <div class="config-field"><label>Idle°</label><input id="cfgIdle" type="number" value="90" min="0" max="180"/></div>
+          <div class="config-field"><label>ON°</label><input id="cfgOn" type="number" value="55" min="0" max="180"/></div>
+          <div class="config-field"><label>OFF°</label><input id="cfgOff" type="number" value="125" min="0" max="180"/></div>
+          <div class="config-field"><label>Hold ms</label><input id="cfgHold" type="number" value="350" min="100" max="2000"/></div>
+        </div>
+        <button class="btn-send-config" onclick="sendConfig()">💾 Simpan ke ESP32 (EEPROM)</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title">// activity log</div>
+  <div class="panel">
+    <div class="panel-header" onclick="togglePanel('log')">
+      <span>📋 Activity Log</span><span id="logArrow">▲</span>
+    </div>
+    <div class="panel-body open" id="logBody" style="padding:0">
+      <div class="log-box" id="logBox">
+        <div class="log-line info">» Siap login...</div>
+      </div>
+      <div style="padding:8px 14px;border-top:1px solid var(--border)">
+        <button onclick="clearLog()" style="background:none;border:none;color:var(--muted);font-family:'DM Mono',monospace;font-size:0.68rem;cursor:pointer;">clear log</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title">// pengaturan mqtt</div>
+  <div class="panel">
+    <div class="panel-header" onclick="togglePanel('settings')">
+      <span>⚙ Konfigurasi HiveMQ</span><span id="settingsArrow">▼</span>
+    </div>
+    <div class="panel-body" id="settingsBody">
+      <div class="server-fields">
+        <div class="field">
+          <label>HiveMQ Cluster URL</label>
+          <input id="cfgHost" value="bfcdf49181b7403e9f0096123fb9483c.s1.eu.hivemq.cloud"
+            placeholder="abc123.s1.eu.hivemq.cloud"/>
+        </div>
+        <div class="field">
+          <label>Topic Prefix</label>
+          <input id="cfgTopic" value="loveswitch/kamar101"/>
+        </div>
+        <button class="btn-save" onclick="saveServerConfig()">SIMPAN & RECONNECT</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════
+//  AUTH CONFIG
+//  Ganti passwordHash dengan SHA-256 dari password dashboard kamu.
+//  Generate: https://emn178.github.io/online-tools/sha256.html
+// ════════════════════════════════════════════════════════════
+const AUTH = {
+  // Username HiveMQ yang diizinkan (lowercase, harus sama persis)
+  expectedMqttUser: 'pipicantik',
+  passwordHash: 'e8a2abc3b86ec9c27cc6e317acc2b5ce90c238f409cccaa290a4313067269510',
+  sessionKey:   'ls_v5_session',
+  sessionExpiry: 24 * 60 * 60 * 1000
+};
+
+// Credentials MQTT — diisi saat login
+let mqttCreds = { user: '', pass: '' };
+
+// Config HiveMQ
+let cfg = {
+  host:        localStorage.getItem('ls_host') || 'bfcdf49181b7403e9f0096123fb9483c.s1.eu.hivemq.cloud',
+  port:        8884,  // WebSocket SSL HiveMQ
+  useSSL:      true,
+  topicBase:   localStorage.getItem('ls_topic') || 'loveswitch/kamar101',
+  get topicCmd()    { return this.topicBase + '/command'; },
+  get topicStatus() { return this.topicBase + '/status'; },
+  get topicConfig() { return this.topicBase + '/config'; },
+  get topicLwill()  { return this.topicBase + '/lwill'; },
+  get clientId()    { return 'dashboard-' + Math.random().toString(16).slice(2,8); },
+};
+
+let client    = null;
+let lampOn    = false;
+let connected = false;
+
+
+// ── Log ──────────────────────────────────────────────────
+function log(msg, type = '') {
+  const box = document.getElementById('logBox');
+  if (!box) return;
+  const el  = document.createElement('div');
+  el.className   = 'log-line ' + type;
+  el.textContent = '[' + new Date().toLocaleTimeString('id-ID') + '] ' + msg;
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+  while (box.children.length > 100) box.removeChild(box.firstChild);
+}
+function clearLog() { document.getElementById('logBox').innerHTML = ''; }
+
+// ── Panel toggle ─────────────────────────────────────────
+function togglePanel(name) {
+  const body  = document.getElementById(name + 'Body');
+  const arrow = document.getElementById(name + 'Arrow');
+  const open  = body.classList.toggle('open');
+  arrow.textContent = open ? '▲' : '▼';
+}
+
+// ── UI update ────────────────────────────────────────────
+
+// setConnected = status browser ↔ HiveMQ broker
+function setConnected(val) {
+  connected = val;
+  document.getElementById('dot').className         = 'dot' + (val ? ' on' : '');
+  document.getElementById('connLabel').textContent  = val ? 'online' : 'offline';
+  document.getElementById('heartBtn').disabled     = !val;
+  // Tidak touch status ESP32 — broker putus bukan berarti ESP32 mati
+}
+
+// setEsp32Online = status ESP32 itu sendiri (hidup/mati)
+function setEsp32Online(val) {
+  const el = document.getElementById('deviceVal');
+  if (val) {
+    el.className = 'stat-val good';
+  } else {
+    el.textContent = 'ESP32 offline';
+    el.className   = 'stat-val bad';
+    document.getElementById('rssiVal').textContent   = '—';
+    document.getElementById('rssiVal').className     = 'stat-val';
+    document.getElementById('ipVal').textContent     = '—';
+    document.getElementById('ipVal').className       = 'stat-val';
+    document.getElementById('uptimeVal').textContent = '—';
+    document.getElementById('uptimeVal').className   = 'stat-val';
+  }
+}
+
+function updateLamp(on) {
+  lampOn = on;
+  const svg  = document.getElementById('heartSvg');
+  const path = document.getElementById('heartPath');
+  const lbl  = document.getElementById('lampLabel');
+  const nl   = document.getElementById('nameLeft');
+  const nr   = document.getElementById('nameRight');
+  if (on) {
+    svg.className = 'heart-svg lamp-on';
+    path.setAttribute('fill', '#ff3e8a');
+    nl.className  = 'name-label green';
+    nr.className  = 'name-label green';
+    lbl.textContent = 'lampu nyala'; lbl.className = 'lamp-label green';
+  } else {
+    svg.className = 'heart-svg';
+    path.setAttribute('fill', '#2a1a22');
+    nl.className  = 'name-label pink';
+    nr.className  = 'name-label pink';
+    lbl.textContent = 'lampu mati'; lbl.className = 'lamp-label pink';
+  }
+}
+
+function updateStats(data) {
+  if (data.rssi !== undefined) {
+    const r  = data.rssi;
+    const el = document.getElementById('rssiVal');
+    el.textContent = r + ' dBm';
+    el.className   = 'stat-val ' + (r > -60 ? 'good' : r > -75 ? 'warn' : 'bad');
+  }
+  if (data.ip)    document.getElementById('ipVal').textContent     = data.ip;
+  if (data.chip)  { document.getElementById('deviceVal').textContent = data.chip; setEsp32Online(true); }
+  if (data.uptime !== undefined) {
+    const s = data.uptime;
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    document.getElementById('uptimeVal').textContent = h > 0 ? h+'j '+m+'m' : m+'m '+(s%60)+'d';
+  }
+  if (data.angle_idle !== undefined) document.getElementById('cfgIdle').value = data.angle_idle;
+  if (data.angle_on   !== undefined) document.getElementById('cfgOn').value   = data.angle_on;
+  if (data.angle_off  !== undefined) document.getElementById('cfgOff').value  = data.angle_off;
+  if (data.hold_ms    !== undefined) document.getElementById('cfgHold').value  = data.hold_ms;
+}
+
+// ── Slider sync ───────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  const slider = document.getElementById('angleSlider');
+  if (slider) slider.addEventListener('input', function() {
+    document.getElementById('angleDisplay').textContent = this.value + '°';
+    document.getElementById('angleBtn').textContent     = this.value;
+  });
+});
+
+// ── SHA-256 hash ─────────────────────────────────────────
+async function hashString(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+// ── Login ─────────────────────────────────────────────────
+async function doLogin() {
+  const pass     = document.getElementById('loginPass').value;
+  const mqttUser = document.getElementById('loginMqttUser').value.trim();
+  const mqttPass = document.getElementById('loginMqttPass').value;
+  const errEl    = document.getElementById('loginErr');
+  const btn      = document.getElementById('loginBtn');
+
+  if (!pass || !mqttUser || !mqttPass) {
+    errEl.textContent = 'Semua field wajib diisi.'; return;
+  }
+
+  btn.disabled = true; btn.textContent = 'Memeriksa...';
+  errEl.textContent = '';
+
+  const hash = await hashString(pass);
+  if (hash !== AUTH.passwordHash) {
+    errEl.textContent = 'Password dashboard salah.';
+    document.getElementById('loginPass').value = '';
+    btn.disabled = false; btn.textContent = 'Masuk ♡'; return;
+  }
+
+  // Validasi username HiveMQ — harus sama persis (case-sensitive)
+  if (mqttUser !== AUTH.expectedMqttUser) {
+    errEl.textContent = 'Username HiveMQ salah.';
+    document.getElementById('loginMqttUser').value = '';
+    btn.disabled = false; btn.textContent = 'Masuk ♡'; return;
+  }
+
+  // Simpan ke sessionStorage — hapus otomatis saat browser tutup
+  sessionStorage.setItem(AUTH.sessionKey, JSON.stringify({
+    expires: Date.now() + AUTH.sessionExpiry,
+    mqttUser, mqttPass
+  }));
+  mqttCreds = { user: mqttUser, pass: mqttPass };
+  btn.disabled = false; btn.textContent = 'Masuk ♡';
+  errEl.textContent = '';
+  showApp();
+}
+
+function checkSession() {
+  try {
+    const raw = sessionStorage.getItem(AUTH.sessionKey);
+    if (!raw) return false;
+    const s = JSON.parse(raw);
+    if (Date.now() > s.expires) { sessionStorage.removeItem(AUTH.sessionKey); return false; }
+    mqttCreds = { user: s.mqttUser, pass: s.mqttPass };
+    return true;
+  } catch(e) { return false; }
+}
+
+function doLogout() {
+  sessionStorage.removeItem(AUTH.sessionKey);
+  if (client && client.isConnected()) client.disconnect();
+  setConnected(false);
+  document.getElementById('app').style.display    = 'none';
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('loginPass').value = '';
+}
+
+// ── MQTT via Paho — konek langsung ke HiveMQ ─────────────
+function connectMQTT() {
+  log(`Konek ke ${cfg.host}:${cfg.port} sebagai ${mqttCreds.user}...`, 'info');
+  client = new Paho.Client(cfg.host, cfg.port, cfg.clientId);
+
+  client.onConnectionLost = (r) => {
+    setConnected(false);
+    // Jangan sentuh ESP32 status — broker putus bukan berarti ESP32 mati
+    log('Koneksi ke broker terputus: ' + (r.errorMessage || '-'), 'err');
+    setTimeout(connectMQTT, 5000);
+  };
+
+
+  client.onMessageArrived = (msg) => {
+    const topic   = msg.destinationName;
+    const payload = msg.payloadString;
+    log('← ' + topic.split('/').pop() + ': ' + payload, 'ws');
+
+    if (topic === cfg.topicStatus) {
+      try {
+        const d = JSON.parse(payload);
+        if (d.state !== undefined) updateLamp(d.state);
+        updateStats(d);
+        setEsp32Online(true); // status masuk = ESP32 online
+      } catch(e) {}
+    }
+
+    if (topic === cfg.topicLwill) {
+      try {
+        const d = JSON.parse(payload);
+        if (d.online === false) {
+          setEsp32Online(false);
+          log('ESP32 offline (LWT)', 'err');
+        } else if (d.online === true) {
+          setEsp32Online(true);
+        }
+      } catch(e) {}
+    }
+  };
+
+  client.connect({
+    useSSL:   cfg.useSSL,
+    timeout:  10,
+    userName: mqttCreds.user,
+    password: mqttCreds.pass,
+    onSuccess: () => {
+      log('Terhubung ke HiveMQ ✓', 'ok');
+      setConnected(true);
+      client.subscribe(cfg.topicStatus);
+      client.subscribe(cfg.topicLwill);
+    },
+    onFailure: (e) => {
+      log('Gagal: ' + e.errorMessage, 'err');
+      setConnected(false);
+      setTimeout(connectMQTT, 5000);
+    }
+  });
+}
+
+// ── Publish ──────────────────────────────────────────────
+function publish(topic, payload) {
+  if (!connected || !client) return;
+  const msg = new Paho.Message(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  msg.destinationName = topic; msg.qos = 1;
+  client.send(msg);
+}
+
+function sendCmd(cmd, angle = undefined) {
+  if (!connected) { log('Belum terhubung!', 'err'); return; }
+  const body = angle !== undefined ? { cmd, angle } : { cmd };
+  publish(cfg.topicCmd, body);
+  log('→ command: ' + JSON.stringify(body), 'info');
+}
+
+function sendEmergency() {
+  if (!connected) { log('Belum terhubung!', 'err'); return; }
+  publish(cfg.topicCmd, { cmd: 'emergency' });
+  log('🛑 EMERGENCY STOP dikirim — servo balik ke idle', 'err');
+}
+
+function sendTestAngle() {
+  const angle = parseInt(document.getElementById('angleSlider').value);
+  sendCmd('test', angle);
+}
+
+function sendConfig() {
+  if (!connected) { log('Belum terhubung!', 'err'); return; }
+  const body = {
+    angle_idle: parseInt(document.getElementById('cfgIdle').value),
+    angle_on:   parseInt(document.getElementById('cfgOn').value),
+    angle_off:  parseInt(document.getElementById('cfgOff').value),
+    hold_ms:    parseInt(document.getElementById('cfgHold').value),
+  };
+  publish(cfg.topicConfig, body);
+  log('→ config: ' + JSON.stringify(body), 'info');
+}
+
+function saveServerConfig() {
+  const host  = document.getElementById('cfgHost').value.trim();
+  const topic = document.getElementById('cfgTopic').value.trim();
+  cfg.host      = host;
+  cfg.topicBase = topic;
+  localStorage.setItem('ls_host', host);
+  localStorage.setItem('ls_topic', topic);
+  if (client && client.isConnected()) client.disconnect();
+  log('Config disimpan, reconnecting...', 'info');
+  setTimeout(connectMQTT, 500);
+}
+
+function showApp() {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('cfgHost').value  = cfg.host;
+  document.getElementById('cfgTopic').value = cfg.topicBase;
+  connectMQTT();
+  log('Login berhasil. Menghubungkan ke HiveMQ...', 'ok');
+}
+
+// ── Start ────────────────────────────────────────────────
+// Cek session dulu — kalau sudah login sebelumnya, langsung buka app
+if (checkSession()) {
+  showApp();
+}
+</script>
+</body>
+</html>
