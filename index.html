@@ -614,7 +614,7 @@ function connectMQTT() {
       client.subscribe(cfg.topicLwill);
     },
     onFailure: (e) => {
-      log('Gagal: ' + e.errorMessage, 'err');
+      log('[ERROR] Gagal konek ke HiveMQ — periksa username/password HiveMQ', 'err');
       setConnected(false);
       setTimeout(connectMQTT, 5000);
     }
